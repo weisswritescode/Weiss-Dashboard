@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal Dashboard</title>
+  <style>
+    :root {
+      --bg:           #0d1117;
+      --surface:      #161b22;
+      --surface2:     #21262d;
+      --border:       #30363d;
+      --text:         #e6edf3;
+      --muted:        #7d8590;
+      --accent:       #58a6ff;
+      --green:        #3fb950;
+      --red:          #f85149;
+      --gold:         #d29922;
+      --radius:       12px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo { font-size: 1rem; font-weight: 700; letter-spacing: -0.02em; }
+    .logo span { color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
+    #last-updated { font-size: 0.72rem; color: var(--muted); }
+    .refresh-btn {
+      background: var(--accent);
+      color: #0d1117;
+      border: none;
+      padding: 0.35rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .refresh-btn:hover { opacity: 0.85; }
+
+    /* ── Tabs ── */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      display: flex;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    nav::-webkit-scrollbar { display: none; }
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 0.9rem 1.1rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Main ── */
+    main { padding: 1.75rem 2rem; max-width: 1440px; margin: 0 auto; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    /* ── Section labels ── */
+    .section-label {
+      display: block;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin: 0 0 0.9rem;
+    }
+    .section-label:not(:first-child) { margin-top: 2rem; }
+
+    /* ── Grids ── */
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1rem;
+    }
+
+    /* ── Market card ── */
+    .market-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.4rem;
+    }
+    .mc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.9rem; }
+    .mc-icon { font-size: 1.4rem; }
+    .mc-tag {
+      font-size: 0.62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      background: var(--surface2);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+    }
+    .mc-price { font-size: 1.55rem; font-weight: 700; line-height: 1; margin-bottom: 0.4rem; }
+    .mc-name { font-size: 0.78rem; color: var(--muted); margin-bottom: 0.6rem; }
+    .mc-change { font-size: 0.8rem; font-weight: 600; }
+    .up   { color: var(--green); }
+    .down { color: var(--red); }
+    .flat { color: var(--muted); }
+
+    /* ── News card ── */
+    a.news-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.4rem;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.15s, transform 0.1s;
+    }
+    a.news-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .nc-source { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent); }
+    .nc-headline { font-size: 0.92rem; font-weight: 600; line-height: 1.45; color: var(--text); }
+    .nc-snippet {
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.55;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .nc-meta { font-size: 0.7rem; color: var(--muted); margin-top: auto; }
+    .badge {
+      display: inline-block;
+      padding: 0.18rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      align-self: flex-start;
+    }
+    .badge-tower      { background: rgba(88,166,255,.15);  color: #58a6ff; }
+    .badge-datacenter { background: rgba(188,140,255,.15); color: #bc8cff; }
+    .badge-fiber      { background: rgba(63,185,80,.15);   color: #3fb950; }
+    .badge-spectrum   { background: rgba(210,153,34,.15);  color: #d29922; }
+    .badge-ma         { background: rgba(248,81,73,.15);   color: #f85149; }
+
+    /* ── Executive Summary ── */
+    .exec-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1.25rem;
+    }
+    .exec-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.4rem;
+    }
+    .exec-card h3 {
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.75rem;
+    }
+    .exec-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.83rem;
+    }
+    .exec-row:last-child { border-bottom: none; }
+    .exec-row-label { color: var(--muted); }
+    .exec-row-right { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; }
+    .exec-news-item {
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.82rem;
+      line-height: 1.4;
+      cursor: pointer;
+      color: var(--text);
+      transition: color 0.15s;
+    }
+    .exec-news-item:last-child { border-bottom: none; }
+    .exec-news-item:hover { color: var(--accent); }
+    .exec-news-src { font-size: 0.67rem; color: var(--muted); margin-bottom: 0.2rem; }
+
+    /* ── Loading / Error ── */
+    .loading {
+      display: flex; align-items: center; justify-content: center;
+      padding: 3rem; color: var(--muted); font-size: 0.85rem; gap: 0.75rem;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-msg {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.4rem;
+      color: var(--muted);
+      font-size: 0.83rem;
+    }
+
+    @media (max-width: 640px) {
+      main { padding: 1rem; }
+      header, nav { padding-left: 1rem; padding-right: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">My <span>Dashboard</span></div>
+  <div class="header-right">
+    <span id="last-updated">Not loaded</span>
+    <button class="refresh-btn" onclick="initDashboard()">↻ Refresh</button>
+  </div>
+</header>
+
+<nav>
+  <button class="tab-btn active" data-tab="summary">⚡ Executive Summary</button>
+  <button class="tab-btn"        data-tab="markets">📈 Markets</button>
+  <button class="tab-btn"        data-tab="ma">🤝 M&A News</button>
+  <button class="tab-btn"        data-tab="digital">📡 Digital Sector</button>
+  <button class="tab-btn"        data-tab="pop">🎬 Pop Culture</button>
+</nav>
+
+<main>
+  <div id="tab-summary"  class="tab-pane active"><div class="loading"><div class="spinner"></div>Loading...</div></div>
+  <div id="tab-markets"  class="tab-pane"><div class="loading"><div class="spinner"></div>Loading market data...</div></div>
+  <div id="tab-ma"       class="tab-pane"><div class="loading"><div class="spinner"></div>Loading M&A news...</div></div>
+  <div id="tab-digital"  class="tab-pane"><div class="loading"><div class="spinner"></div>Loading digital sector news...</div></div>
+  <div id="tab-pop"      class="tab-pane"><div class="loading"><div class="spinner"></div>Loading trending news...</div></div>
+</main>
+
+<script>
+// ================================================================
+//  API KEYS  —  replace the placeholder strings with your own keys
+// ================================================================
+const ALPHA_VANTAGE_KEY = 'F6DH8Z5ABIEOCPDT';
+const NEWS_API_KEY      = '16ff76a744f1458bbc78fdb7f0dce05f';
+// ================================================================
+//  NOTE: NewsAPI free tier blocks browser requests from non-localhost
+//  origins. We route calls through a lightweight CORS proxy so the
+//  dashboard works on GitHub Pages without a backend.
+// ================================================================
+
+// ── State ────────────────────────────────────────────────────────
+const S = { markets: {}, ma: [], digital: { towers:[], dc:[], fiber:[], spectrum:[] }, pop: [] };
+
+// ── Tabs ─────────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ── Helpers ───────────────────────────────────────────────────────
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function timeAgo(iso) {
+  const d = (Date.now() - new Date(iso)) / 1000;
+  if (d < 3600)  return Math.round(d / 60)  + 'm ago';
+  if (d < 86400) return Math.round(d / 3600) + 'h ago';
+  return Math.round(d / 86400) + 'd ago';
+}
+
+function fmt(n, decimals = 2) {
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+// ── Market instruments ────────────────────────────────────────────
+const INSTRUMENTS = [
+  { id:'spy',  symbol:'SPY',  name:'S&P 500',      group:'index',     icon:'📊', type:'equity'  },
+  { id:'qqq',  symbol:'QQQ',  name:'Nasdaq 100',   group:'index',     icon:'💻', type:'equity'  },
+  { id:'dia',  symbol:'DIA',  name:'Dow Jones',    group:'index',     icon:'🏭', type:'equity'  },
+  { id:'iwm',  symbol:'IWM',  name:'Russell 2000', group:'index',     icon:'📉', type:'equity'  },
+  { id:'gld',  symbol:'GLD',  name:'Gold (GLD)',   group:'commodity', icon:'🥇', type:'equity'  },
+  { id:'uso',  symbol:'USO',  name:'Crude Oil',    group:'commodity', icon:'🛢️', type:'equity'  },
+  { id:'ung',  symbol:'UNG',  name:'Natural Gas',  group:'commodity', icon:'🔥', type:'equity'  },
+  { id:'btc',  symbol:'BTC',  name:'Bitcoin',      group:'commodity', icon:'₿',  type:'crypto'  },
+];
+
+// ── Alpha Vantage fetch ───────────────────────────────────────────
+async function fetchQuote(inst) {
+  try {
+    let url, json;
+    if (inst.type === 'crypto') {
+      url = `https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=BTC&to_currency=USD&apikey=${ALPHA_VANTAGE_KEY}`;
+      json = await (await fetch(url)).json();
+      const r = json['Realtime Currency Exchange Rate'];
+      if (!r) return null;
+      return { price: parseFloat(r['5. Exchange Rate']), change: null, pct: null };
+    } else {
+      url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${inst.symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      json = await (await fetch(url)).json();
+      const q = json['Global Quote'];
+      if (!q || !q['05. price']) return null;
+      const change = parseFloat(q['09. change']);
+      const pct    = parseFloat(q['10. change percent']);
+      return { price: parseFloat(q['05. price']), change, pct };
+    }
+  } catch { return null; }
+}
+
+async function loadMarkets() {
+  // Fetch sequentially with a small stagger to stay within Alpha Vantage's
+  // 5-requests/minute free-tier limit. Cards render progressively as each
+  // result arrives.
+  for (const inst of INSTRUMENTS) {
+    const data = await fetchQuote(inst);
+    S.markets[inst.id] = data;
+    renderMarkets();    // re-render after each card arrives
+    renderSummary();
+    await sleep(13000); // ~4.6 req/min — safely under the 5/min limit
+                        // Remove or reduce this delay if you have a paid key
+  }
+}
+
+function changeClass(v) {
+  if (v === null || v === undefined) return 'flat';
+  return v >= 0 ? 'up' : 'down';
+}
+function changeArrow(v) { return v === null ? '' : (v >= 0 ? '▲ ' : '▼ '); }
+
+function marketCardHTML(inst) {
+  const d = S.markets[inst.id];
+  const price    = d ? `$${fmt(d.price)}` : '—';
+  const changeStr = !d || d.change === null
+    ? 'Awaiting data…'
+    : `${changeArrow(d.change)}${d.change >= 0 ? '+' : ''}${fmt(d.change)} (${d.pct >= 0 ? '+' : ''}${fmt(d.pct)}%)`;
+  const cls = d ? changeClass(d.change) : 'flat';
+
+  return `
+    <div class="market-card">
+      <div class="mc-top">
+        <span class="mc-icon">${inst.icon}</span>
+        <span class="mc-tag">${inst.symbol}</span>
+      </div>
+      <div class="mc-price">${price}</div>
+      <div class="mc-name">${inst.name}</div>
+      <div class="mc-change ${cls}">${changeStr}</div>
+    </div>`;
+}
+
+function renderMarkets() {
+  const indexes = INSTRUMENTS.filter(i => i.group === 'index');
+  const comms   = INSTRUMENTS.filter(i => i.group === 'commodity');
+  document.getElementById('tab-markets').innerHTML = `
+    <span class="section-label">Major Indexes</span>
+    <div class="grid-4">${indexes.map(marketCardHTML).join('')}</div>
+    <span class="section-label">Commodities &amp; Crypto</span>
+    <div class="grid-4">${comms.map(marketCardHTML).join('')}</div>`;
+}
+
+// ── NewsAPI fetch (via CORS proxy) ────────────────────────────────
+const PROXY = 'https://corsproxy.io/?';
+
+async function fetchNews({ q, category, pageSize = 9 }) {
+  try {
+    const from  = new Date(Date.now() - 3 * 864e5).toISOString().split('T')[0];
+    let apiUrl;
+    if (category) {
+      apiUrl = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
+    } else {
+      apiUrl = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&from=${from}&sortBy=publishedAt&language=en&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
+    }
+    const res  = await fetch(PROXY + encodeURIComponent(apiUrl));
+    const json = await res.json();
+    return (json.articles || []).filter(a => a.title !== '[Removed]');
+  } catch { return []; }
+}
+
+function newsCardHTML(article, badgeType) {
+  const badge = badgeType ? `<span class="badge badge-${badgeType}">${badgeType.replace('datacenter','data center')}</span>` : '';
+  const snippet = article.description
+    ? `<div class="nc-snippet">${article.description}</div>` : '';
+  return `
+    <a class="news-card" href="${article.url}" target="_blank" rel="noopener noreferrer">
+      ${badge}
+      <div class="nc-source">${article.source?.name || 'News'}</div>
+      <div class="nc-headline">${article.title}</div>
+      ${snippet}
+      <div class="nc-meta">${timeAgo(article.publishedAt)}</div>
+    </a>`;
+}
+
+// M&A
+async function loadMA() {
+  S.ma = await fetchNews({ q: '(merger OR acquisition OR "M&A" OR "buyout" OR "takeover") AND (deal OR billion OR million)', pageSize: 9 });
+  renderMA();
+  renderSummary();
+}
+
+function renderMA() {
+  const el = document.getElementById('tab-ma');
+  if (!S.ma.length) {
+    el.innerHTML = `<div class="error-msg">⚠️ M&A news unavailable — verify your NewsAPI key and reload.</div>`; return;
+  }
+  el.innerHTML = `
+    <span class="section-label">Recent M&amp;A Deals &amp; Headlines</span>
+    <div class="grid-3">${S.ma.map(a => newsCardHTML(a, 'ma')).join('')}</div>`;
+}
+
+// Digital Sector
+async function loadDigital() {
+  S.digital.towers   = await fetchNews({ q: '"cell tower" OR "American Tower" OR "Crown Castle" OR "SBA Communications" OR "tower site"', pageSize: 4 });
+  await sleep(350);
+  S.digital.dc       = await fetchNews({ q: '"data center" OR "hyperscale" OR "colocation" OR "Equinix" OR "Digital Realty" OR "cloud campus"', pageSize: 4 });
+  await sleep(350);
+  S.digital.fiber    = await fetchNews({ q: '"fiber network" OR "fiber optic" OR "dark fiber" OR "broadband build" OR "FTTH"', pageSize: 4 });
+  await sleep(350);
+  S.digital.spectrum = await fetchNews({ q: '"spectrum auction" OR "5G spectrum" OR "FCC spectrum" OR "spectrum license" OR "CBRS"', pageSize: 4 });
+  renderDigital();
+  renderSummary();
+}
+
+function renderDigital() {
+  const el = document.getElementById('tab-digital');
+  const sec = (label, articles, badge) => {
+    const cards = articles.length
+      ? `<div class="grid-3">${articles.map(a => newsCardHTML(a, badge)).join('')}</div>`
+      : `<div class="error-msg">No recent articles found.</div>`;
+    return `<span class="section-label">${label}</span>${cards}`;
+  };
+  el.innerHTML =
+    sec('📡 Cell Towers',    S.digital.towers,   'tower')      +
+    sec('🏢 Data Centers',   S.digital.dc,        'datacenter') +
+    sec('🌐 Fiber Networks', S.digital.fiber,     'fiber')      +
+    sec('📶 Spectrum',       S.digital.spectrum,  'spectrum');
+}
+
+// Pop Culture
+async function loadPop() {
+  S.pop = await fetchNews({ category: 'entertainment', pageSize: 9 });
+  renderPop();
+  renderSummary();
+}
+
+function renderPop() {
+  const el = document.getElementById('tab-pop');
+  if (!S.pop.length) {
+    el.innerHTML = `<div class="error-msg">⚠️ Entertainment news unavailable — verify your NewsAPI key and reload.</div>`; return;
+  }
+  el.innerHTML = `
+    <span class="section-label">Trending Entertainment &amp; Culture</span>
+    <div class="grid-3">${S.pop.map(a => newsCardHTML(a, null)).join('')}</div>`;
+}
+
+// ── Executive Summary ─────────────────────────────────────────────
+function renderSummary() {
+  // Market snapshot rows
+  const mktRows = INSTRUMENTS.slice(0, 6).map(inst => {
+    const d   = S.markets[inst.id];
+    const price  = d ? `$${fmt(d.price)}` : '—';
+    const pctStr = (!d || d.pct === null) ? '' : `<span class="${changeClass(d.pct)}" style="font-size:.75rem">${d.pct >= 0 ? '+' : ''}${fmt(d.pct)}%</span>`;
+    return `<div class="exec-row">
+      <span class="exec-row-label">${inst.icon} ${inst.name}</span>
+      <span class="exec-row-right"><span style="color:var(--text)">${price}</span>${pctStr}</span>
+    </div>`;
+  }).join('');
+
+  // News items helper
+  const newsItems = (articles, max = 4) =>
+    articles.slice(0, max).map(a => `
+      <div class="exec-news-item" onclick="window.open('${a.url}','_blank')">
+        <div class="exec-news-src">${a.source?.name || ''} · ${timeAgo(a.publishedAt)}</div>
+        ${a.title}
+      </div>`).join('') || `<div style="color:var(--muted);font-size:.8rem;padding:.4rem 0">Loading…</div>`;
+
+  const topDigital = [
+    ...(S.digital.towers.slice(0,1)),
+    ...(S.digital.dc.slice(0,1)),
+    ...(S.digital.fiber.slice(0,1)),
+    ...(S.digital.spectrum.slice(0,1)),
+  ];
+
+  document.getElementById('tab-summary').innerHTML = `
+    <div class="exec-grid">
+      <div class="exec-card">
+        <h3>📈 Market Snapshot</h3>
+        ${mktRows || '<div style="color:var(--muted);font-size:.8rem">Loading…</div>'}
+      </div>
+      <div class="exec-card">
+        <h3>🤝 Top M&amp;A Headlines</h3>
+        ${newsItems(S.ma, 4)}
+      </div>
+      <div class="exec-card">
+        <h3>📡 Digital Sector Highlights</h3>
+        ${newsItems(topDigital, 4)}
+      </div>
+      <div class="exec-card">
+        <h3>🎬 Trending Now</h3>
+        ${newsItems(S.pop, 4)}
+      </div>
+    </div>`;
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+async function initDashboard() {
+  // Reset
+  S.markets = {}; S.ma = []; S.digital = { towers:[], dc:[], fiber:[], spectrum:[] }; S.pop = [];
+
+  const loader = id => document.getElementById(id).innerHTML = `<div class="loading"><div class="spinner"></div>Loading…</div>`;
+  ['tab-markets','tab-ma','tab-digital','tab-pop'].forEach(loader);
+  renderSummary();
+  document.getElementById('last-updated').textContent = 'Refreshing…';
+
+  // News loads in parallel; markets stream in one-by-one (rate-limit safe)
+  await Promise.all([ loadMA(), loadDigital(), loadPop(), loadMarkets() ]);
+
+  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+initDashboard();
+</script>
+</body>
+</html>
