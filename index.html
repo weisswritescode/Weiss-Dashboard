@@ -464,7 +464,7 @@ const PROXY = 'https://corsproxy.io/?';
 // ── Marketaux: M&A deals ──────────────────────────────────────────
 async function fetchMarketaux() {
   try {
-    const from = new Date(Date.now() - 7*864e5).toISOString();
+    const from = new Date(Date.now() - 7*864e5).toISOString().split('T')[0]; // YYYY-MM-DD
     const url  = `https://api.marketaux.com/v1/news/all?topics=mergers_acquisitions&language=en&filter_entities=true&published_after=${from}&limit=20&api_token=${MARKETAUX_KEY}`;
     const json = await (await fetchWithTimeout(url)).json();
     return (json.data || []).map(a => ({
