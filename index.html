@@ -149,6 +149,7 @@ const ALPHA_VANTAGE_KEY = 'F6DH8Z5ABIEOCPDT';
 const NEWS_API_KEY      = '16ff76a744f1458bbc78fdb7f0dce05f';
 const FRED_API_KEY      = '45a3e301b2685ec4696090e073190a85';
 const FMP_API_KEY       = 'YOUR_FMP_API_KEY'; // REPLACE — free at https://site.financialmodelingprep.com/register
+const MARKETAUX_KEY     = 'SQOYuRafohNksHc21I6hptak8ckei0qFo75z61jb';
 // ================================================================
 //  NOTE ON RATE LIMITS:
 //  Alpha Vantage free tier = 25 requests/day, 5/minute.
@@ -508,21 +509,56 @@ function renderMarkets() {
 }
 
 // ── NewsAPI ───────────────────────────────────────────────────────
-// ── NewsAPI fetch ─────────────────────────────────────────────────
+// ── CORS proxy (for RSS feeds) ────────────────────────────────────
 const PROXY = 'https://corsproxy.io/?';
-async function fetchNews({ q, category, pageSize = 12, domains = '' }) {
+
+// ── NewsAPI (pop culture only — localhost dev fallback) ───────────
+async function fetchNews({ category, pageSize = 9 }) {
   try {
-    const from = new Date(Date.now() - 5*864e5).toISOString().split('T')[0]; // last 5 days
-    let apiUrl;
-    if (category) {
-      apiUrl = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
-    } else {
-      apiUrl = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&from=${from}&sortBy=publishedAt&language=en&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
-      if (domains) apiUrl += `&domains=${domains}`;
-    }
+    const apiUrl = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
     const res  = await fetch(PROXY + encodeURIComponent(apiUrl));
     const json = await res.json();
     return (json.articles || []).filter(a => a.title && a.title !== '[Removed]');
+  } catch { return []; }
+}
+
+// ── Marketaux: M&A deals ──────────────────────────────────────────
+async function fetchMarketaux() {
+  try {
+    const from = new Date(Date.now() - 7*864e5).toISOString(); // last 7 days
+    const url  = `https://api.marketaux.com/v1/news/all?topics=mergers_acquisitions&language=en&filter_entities=true&published_after=${from}&limit=20&api_token=${MARKETAUX_KEY}`;
+    const json = await (await fetch(url)).json();
+    return (json.data || []).map(a => ({
+      title:       a.title,
+      description: a.description,
+      url:         a.url,
+      publishedAt: a.published_at,
+      source:      { name: a.source },
+      entities:    a.entities || []
+    }));
+  } catch { return []; }
+}
+
+// ── RSS feed fetcher ──────────────────────────────────────────────
+async function fetchRSS(feedUrl, sourceName) {
+  try {
+    const res  = await fetch(PROXY + encodeURIComponent(feedUrl));
+    const text = await res.text();
+    const xml  = new DOMParser().parseFromString(text, 'text/xml');
+    const items = [...xml.querySelectorAll('item, entry')].slice(0, 8);
+    return items.map(item => {
+      const txt  = tag => item.querySelector(tag)?.textContent?.trim() || '';
+      const linkEl = item.querySelector('link');
+      const url  = linkEl?.getAttribute('href') || linkEl?.textContent?.trim() || txt('guid');
+      const desc = txt('description') || txt('summary') || txt('content');
+      return {
+        title:       txt('title').replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        description: desc.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').trim().slice(0, 280),
+        url:         url.replace(/<!\[CDATA\[|\]\]>/g, '').trim(),
+        publishedAt: txt('pubDate') || txt('published') || txt('updated') || new Date().toISOString(),
+        source:      { name: sourceName }
+      };
+    }).filter(a => a.title && a.url);
   } catch { return []; }
 }
 
@@ -535,13 +571,6 @@ function highlightDeal(text) {
   );
 }
 
-// ── Relevance filters ─────────────────────────────────────────────
-function isMandAArticle(a) {
-  const t = ((a.title||'') + ' ' + (a.description||'')).toLowerCase();
-  const hasDeal  = /\b(acqui|merger|buyout|take.private|divestiture|carve.out|to buy|agreed to purchase|stake in|takes over|going private)\b/.test(t);
-  const hasValue = /\$[\d]|\bbillion\b|\bmillion\b/.test(t);
-  return hasDeal && hasValue;
-}
 
 const DIGITAL_MUST = {
   towers:   t => /\b(cell tower|tower site|tower compan|telecom tower|macro tower|american tower|crown castle|sba communications|vertical bridge|uniti towers|tillman)\b/i.test(t),
@@ -582,15 +611,9 @@ function maCardHTML(article) {
 }
 
 // ── M&A loader ────────────────────────────────────────────────────
-// Targets financial press, requires both a deal verb AND a dollar value,
-// then filters client-side to keep only genuine transaction articles.
 async function loadMA() {
-  const raw = await fetchNews({
-    q: '"acquired" OR "acquisition of" OR "agreed to buy" OR "agreed to acquire" OR "merger agreement" OR "buyout" OR "take private" OR "going private" OR "divest" OR "asset sale"',
-    domains: 'reuters.com,bloomberg.com,wsj.com,ft.com,axios.com,cnbc.com,businesswire.com,prnewswire.com,globenewswire.com,dealreporter.com',
-    pageSize: 20
-  });
-  S.ma = raw.filter(isMandAArticle).slice(0, 9);
+  const raw = await fetchMarketaux();
+  S.ma = raw.slice(0, 9);
   renderMA(); renderSummary();
 }
 function renderMA() {
@@ -605,21 +628,23 @@ function renderMA() {
 }
 
 // ── Digital sector loader ─────────────────────────────────────────
-// Each sub-section uses a tight domain list + client-side topic filter
-// to ensure articles are genuinely about that part of digital infra.
-const DIGITAL_DOMAINS = 'reuters.com,bloomberg.com,lightreading.com,fiercetelecom.com,telecomramblings.com,wsj.com,axios.com,sdxcentral.com,datacenterdynamics.com,capacitymedia.com,totalteleco.com,rcrwireless.com';
+// Fetches specialist RSS feeds, then splits articles into sub-sections
+// using client-side keyword filters.
+const DIGITAL_FEEDS = [
+  { url: 'https://www.lightreading.com/rss/',                    name: 'Light Reading' },
+  { url: 'https://www.rcrwireless.com/feed',                     name: 'RCR Wireless' },
+  { url: 'https://www.datacenterdynamics.com/en/rss/',           name: 'Data Center Dynamics' },
+  { url: 'https://www.fiercetelecom.com/rss/xml',                name: 'Fierce Telecom' },
+  { url: 'https://www.telecomramblings.com/feed/',               name: 'Telecom Ramblings' },
+];
 
 async function loadDigital() {
-  const [t, d, f, s] = await Promise.all([
-    fetchNews({ q:'"cell tower" OR "tower company" OR "tower lease" OR "American Tower" OR "Crown Castle" OR "SBA Communications" OR "Vertical Bridge" OR "macro site"', domains: DIGITAL_DOMAINS, pageSize:10 }),
-    fetchNews({ q:'"data center" OR "hyperscale campus" OR "colocation" OR "compute campus" OR "AI data center" OR "Equinix" OR "Digital Realty" OR "Iron Mountain" OR "CyrusOne"', domains: DIGITAL_DOMAINS, pageSize:10 }),
-    fetchNews({ q:'"fiber network" OR "FTTH" OR "fiber to the home" OR "dark fiber" OR "fiber optic" OR "broadband deployment" OR "fiber build"', domains: DIGITAL_DOMAINS, pageSize:10 }),
-    fetchNews({ q:'"spectrum auction" OR "spectrum license" OR "FCC" OR "CBRS" OR "C-band" OR "mid-band" OR "mmWave" OR "spectrum band"', domains: DIGITAL_DOMAINS, pageSize:10 }),
-  ]);
-  S.digital.towers   = filterDigital(t, 'towers').slice(0, 4);
-  S.digital.dc       = filterDigital(d, 'dc').slice(0, 4);
-  S.digital.fiber    = filterDigital(f, 'fiber').slice(0, 4);
-  S.digital.spectrum = filterDigital(s, 'spectrum').slice(0, 4);
+  const allArrays = await Promise.all(DIGITAL_FEEDS.map(f => fetchRSS(f.url, f.name)));
+  const all = allArrays.flat();
+  S.digital.towers   = all.filter(a => DIGITAL_MUST.towers((a.title||'')+' '+(a.description||''))).slice(0, 4);
+  S.digital.dc       = all.filter(a => DIGITAL_MUST.dc((a.title||'')+' '+(a.description||''))).slice(0, 4);
+  S.digital.fiber    = all.filter(a => DIGITAL_MUST.fiber((a.title||'')+' '+(a.description||''))).slice(0, 4);
+  S.digital.spectrum = all.filter(a => DIGITAL_MUST.spectrum((a.title||'')+' '+(a.description||''))).slice(0, 4);
   renderDigital(); renderSummary();
 }
 function renderDigital() {
