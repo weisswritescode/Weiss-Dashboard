@@ -90,6 +90,7 @@
     .badge-fiber      { background:rgba(63,185,80,.15);  color:#3fb950; }
     .badge-spectrum   { background:rgba(210,153,34,.15); color:#d29922; }
     .badge-ma         { background:rgba(248,81,73,.15);  color:#f85149; }
+    .deal-hi { color:#ff79c6; font-weight:700; } /* pink: deal price, multiples, buyer/seller */
 
     /* Executive Summary */
     .exec-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:1.25rem; }
@@ -507,19 +508,53 @@ function renderMarkets() {
 }
 
 // ── NewsAPI ───────────────────────────────────────────────────────
+// ── NewsAPI fetch ─────────────────────────────────────────────────
 const PROXY = 'https://corsproxy.io/?';
-async function fetchNews({ q, category, pageSize = 9 }) {
+async function fetchNews({ q, category, pageSize = 12, domains = '' }) {
   try {
-    const from = new Date(Date.now() - 3*864e5).toISOString().split('T')[0];
-    const apiUrl = category
-      ? `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`
-      : `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&from=${from}&sortBy=publishedAt&language=en&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
+    const from = new Date(Date.now() - 5*864e5).toISOString().split('T')[0]; // last 5 days
+    let apiUrl;
+    if (category) {
+      apiUrl = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
+    } else {
+      apiUrl = `https://newsapi.org/v2/everything?q=${encodeURIComponent(q)}&from=${from}&sortBy=publishedAt&language=en&pageSize=${pageSize}&apiKey=${NEWS_API_KEY}`;
+      if (domains) apiUrl += `&domains=${domains}`;
+    }
     const res  = await fetch(PROXY + encodeURIComponent(apiUrl));
     const json = await res.json();
-    return (json.articles || []).filter(a => a.title !== '[Removed]');
+    return (json.articles || []).filter(a => a.title && a.title !== '[Removed]');
   } catch { return []; }
 }
 
+// ── Deal term highlighter (pink) ──────────────────────────────────
+function highlightDeal(text) {
+  if (!text) return '';
+  return text.replace(
+    /(\$[\d,]+\.?\d*\s*(?:billion|million|trillion|bn|mn)\b|\$[\d,]+\.?\d*[BMT]\b|\b\d+\.?\d*x(?:\s*(?:EBITDA|EV\/EBITDA|revenue|NTM|LTM))?)/gi,
+    '<span class="deal-hi">$1</span>'
+  );
+}
+
+// ── Relevance filters ─────────────────────────────────────────────
+function isMandAArticle(a) {
+  const t = ((a.title||'') + ' ' + (a.description||'')).toLowerCase();
+  const hasDeal  = /\b(acqui|merger|buyout|take.private|divestiture|carve.out|to buy|agreed to purchase|stake in|takes over|going private)\b/.test(t);
+  const hasValue = /\$[\d]|\bbillion\b|\bmillion\b/.test(t);
+  return hasDeal && hasValue;
+}
+
+const DIGITAL_MUST = {
+  towers:   t => /\b(cell tower|tower site|tower compan|telecom tower|macro tower|american tower|crown castle|sba communications|vertical bridge|uniti towers|tillman)\b/i.test(t),
+  dc:       t => /\b(data center|hyperscale|colocation|colo\b|megawatt|mw capacity|compute campus|ai campus|cloud campus)\b/i.test(t),
+  fiber:    t => /\b(fiber.to.the|ftth|fiber network|dark fiber|fiber optic|broadband.*build|fiber.*deploy|fiber.*mile|homes passed)\b/i.test(t),
+  spectrum: t => /\b(spectrum|fcc auction|cbrs|c.band|mmwave|mid.band|radio.*license|spectrum.*license|auction.*band)\b/i.test(t),
+};
+
+function filterDigital(articles, key) {
+  return articles.filter(a => DIGITAL_MUST[key]((a.title||'') + ' ' + (a.description||'')));
+}
+
+// ── News card (general) ───────────────────────────────────────────
 function newsCardHTML(article, badgeType) {
   const badge = badgeType ? `<span class="badge badge-${badgeType}">${badgeType.replace('datacenter','data center')}</span>` : '';
   return `
@@ -532,33 +567,74 @@ function newsCardHTML(article, badgeType) {
     </a>`;
 }
 
+// ── M&A card (highlighted deal terms in pink) ─────────────────────
+function maCardHTML(article) {
+  const title   = highlightDeal(article.title || '');
+  const snippet = highlightDeal(article.description || '');
+  return `
+    <a class="news-card" href="${article.url}" target="_blank" rel="noopener noreferrer">
+      <span class="badge badge-ma">M&amp;A</span>
+      <div class="nc-source">${article.source?.name || 'News'}</div>
+      <div class="nc-headline">${title}</div>
+      ${snippet ? `<div class="nc-snippet">${snippet}</div>` : ''}
+      <div class="nc-meta">${timeAgo(article.publishedAt)}</div>
+    </a>`;
+}
+
+// ── M&A loader ────────────────────────────────────────────────────
+// Targets financial press, requires both a deal verb AND a dollar value,
+// then filters client-side to keep only genuine transaction articles.
 async function loadMA() {
-  S.ma = await fetchNews({ q:'(merger OR acquisition OR "M&A" OR buyout OR takeover) AND (deal OR billion OR million)', pageSize:9 });
+  const raw = await fetchNews({
+    q: '"acquired" OR "acquisition of" OR "agreed to buy" OR "agreed to acquire" OR "merger agreement" OR "buyout" OR "take private" OR "going private" OR "divest" OR "asset sale"',
+    domains: 'reuters.com,bloomberg.com,wsj.com,ft.com,axios.com,cnbc.com,businesswire.com,prnewswire.com,globenewswire.com,dealreporter.com',
+    pageSize: 20
+  });
+  S.ma = raw.filter(isMandAArticle).slice(0, 9);
   renderMA(); renderSummary();
 }
 function renderMA() {
   const el = document.getElementById('tab-ma');
-  if (!S.ma.length) { el.innerHTML = `<div class="error-msg">⚠️ M&A news unavailable — verify your NewsAPI key and reload.</div>`; return; }
-  el.innerHTML = `<span class="section-label">Recent M&amp;A Deals &amp; Headlines</span><div class="grid-3">${S.ma.map(a=>newsCardHTML(a,'ma')).join('')}</div>`;
+  if (!S.ma.length) {
+    el.innerHTML = `<div class="error-msg">No qualifying M&A deals found in the last 5 days. Deal terms (price, buyer, seller) highlighted in <span class="deal-hi">pink</span> when present.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <span class="section-label">Confirmed M&amp;A Transactions — deal price &amp; multiples highlighted in <span class="deal-hi" style="text-transform:none;letter-spacing:0">pink</span></span>
+    <div class="grid-3">${S.ma.map(maCardHTML).join('')}</div>`;
 }
 
+// ── Digital sector loader ─────────────────────────────────────────
+// Each sub-section uses a tight domain list + client-side topic filter
+// to ensure articles are genuinely about that part of digital infra.
+const DIGITAL_DOMAINS = 'reuters.com,bloomberg.com,lightreading.com,fiercetelecom.com,telecomramblings.com,wsj.com,axios.com,sdxcentral.com,datacenterdynamics.com,capacitymedia.com,totalteleco.com,rcrwireless.com';
+
 async function loadDigital() {
-  S.digital.towers   = await fetchNews({ q:'"cell tower" OR "American Tower" OR "Crown Castle" OR "SBA Communications" OR "tower site"', pageSize:4 });
-  await sleep(350);
-  S.digital.dc       = await fetchNews({ q:'"data center" OR "hyperscale" OR "colocation" OR "Equinix" OR "Digital Realty" OR "cloud campus"', pageSize:4 });
-  await sleep(350);
-  S.digital.fiber    = await fetchNews({ q:'"fiber network" OR "fiber optic" OR "dark fiber" OR "broadband build" OR FTTH', pageSize:4 });
-  await sleep(350);
-  S.digital.spectrum = await fetchNews({ q:'"spectrum auction" OR "5G spectrum" OR "FCC spectrum" OR "spectrum license" OR CBRS', pageSize:4 });
+  const [t, d, f, s] = await Promise.all([
+    fetchNews({ q:'"cell tower" OR "tower company" OR "tower lease" OR "American Tower" OR "Crown Castle" OR "SBA Communications" OR "Vertical Bridge" OR "macro site"', domains: DIGITAL_DOMAINS, pageSize:10 }),
+    fetchNews({ q:'"data center" OR "hyperscale campus" OR "colocation" OR "compute campus" OR "AI data center" OR "Equinix" OR "Digital Realty" OR "Iron Mountain" OR "CyrusOne"', domains: DIGITAL_DOMAINS, pageSize:10 }),
+    fetchNews({ q:'"fiber network" OR "FTTH" OR "fiber to the home" OR "dark fiber" OR "fiber optic" OR "broadband deployment" OR "fiber build"', domains: DIGITAL_DOMAINS, pageSize:10 }),
+    fetchNews({ q:'"spectrum auction" OR "spectrum license" OR "FCC" OR "CBRS" OR "C-band" OR "mid-band" OR "mmWave" OR "spectrum band"', domains: DIGITAL_DOMAINS, pageSize:10 }),
+  ]);
+  S.digital.towers   = filterDigital(t, 'towers').slice(0, 4);
+  S.digital.dc       = filterDigital(d, 'dc').slice(0, 4);
+  S.digital.fiber    = filterDigital(f, 'fiber').slice(0, 4);
+  S.digital.spectrum = filterDigital(s, 'spectrum').slice(0, 4);
   renderDigital(); renderSummary();
 }
 function renderDigital() {
   const el = document.getElementById('tab-digital');
   const sec = (label, articles, badge) => {
-    const cards = articles.length ? `<div class="grid-3">${articles.map(a=>newsCardHTML(a,badge)).join('')}</div>` : `<div class="error-msg">No recent articles found.</div>`;
+    const cards = articles.length
+      ? `<div class="grid-3">${articles.map(a=>newsCardHTML(a,badge)).join('')}</div>`
+      : `<div class="error-msg" style="margin-bottom:1rem">No qualifying articles found for this category in the last 5 days.</div>`;
     return `<span class="section-label">${label}</span>${cards}`;
   };
-  el.innerHTML = sec('📡 Cell Towers',S.digital.towers,'tower') + sec('🏢 Data Centers',S.digital.dc,'datacenter') + sec('🌐 Fiber Networks',S.digital.fiber,'fiber') + sec('📶 Spectrum',S.digital.spectrum,'spectrum');
+  el.innerHTML =
+    sec('📡 Cell Towers',    S.digital.towers,   'tower')      +
+    sec('🏢 Data Centers',   S.digital.dc,        'datacenter') +
+    sec('🌐 Fiber Networks', S.digital.fiber,     'fiber')      +
+    sec('📶 Spectrum',       S.digital.spectrum,  'spectrum');
 }
 
 async function loadPop() {
