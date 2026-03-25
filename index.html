@@ -190,7 +190,7 @@ const INSTRUMENTS = [
 
 // ── State ─────────────────────────────────────────────────────────
 const S = {
-  markets: Object.fromEntries(INSTRUMENTS.map(i => [i.id, { quote:null, monthly:null, overview:null }])),
+  markets: Object.fromEntries(INSTRUMENTS.map(i => [i.id, { quote:null }])),
   ma:[], digital:{ towers:[], dc:[], fiber:[], spectrum:[] }, pop:[]
 };
 
@@ -225,10 +225,15 @@ function timeAgo(iso) {
   return Math.round(d/86400) + 'd ago';
 }
 
-// ── Alpha Vantage: Quote ──────────────────────────────────────────
+// ── Alpha Vantage: Daily series (price + daily change + YTD) ─────
+// One call per ticker covers everything we need.
+// outputsize=compact returns the last 100 trading days — enough to
+// reach Jan 1 of the current year for YTD (we're within ~60 trading
+// days of Jan 1 in early 2026; if you use this in late Q3/Q4 and
+// YTD shows "—", switch outputsize to "full").
 async function fetchQuote(inst) {
-  const ck = 'q_' + inst.id;
-  const hit = cacheGet(ck, 30 * 60 * 1000);
+  const ck  = 'q_' + inst.id;
+  const hit = cacheGet(ck, 30 * 60 * 1000); // 30-min cache
   if (hit) return hit;
   try {
     let result;
@@ -238,98 +243,42 @@ async function fetchQuote(inst) {
       if (j.Note || j.Information) return null;
       const r = j['Realtime Currency Exchange Rate'];
       if (!r) return null;
-      result = { price: parseFloat(r['5. Exchange Rate']), change: null, pct: null };
+      result = { price: parseFloat(r['5. Exchange Rate']), change: null, pct: null, ytdPct: null };
     } else {
-      const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${inst.symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
+      const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${inst.symbol}&outputsize=compact&apikey=${ALPHA_VANTAGE_KEY}`;
       const j = await (await fetch(url)).json();
       if (j.Note || j.Information) return null;
-      const q = j['Global Quote'];
-      if (!q || !q['05. price']) return null;
-      result = {
-        price:  parseFloat(q['05. price']),
-        change: parseFloat(q['09. change']),
-        pct:    parseFloat(q['10. change percent'])
-      };
+      const series = j['Time Series (Daily)'];
+      if (!series) return null;
+      const dates      = Object.keys(series).sort().reverse(); // newest first
+      const latest     = parseFloat(series[dates[0]]['4. close']);
+      const prev       = parseFloat(series[dates[1]]['4. close']);
+      const change     = latest - prev;
+      const pct        = (change / prev) * 100;
+      // YTD base = last trading day of previous year
+      const curYear    = new Date().getFullYear();
+      const ytdDate    = dates.find(d => parseInt(d) < curYear);
+      const ytdBase    = ytdDate ? parseFloat(series[ytdDate]['4. close']) : null;
+      const ytdPct     = ytdBase ? (latest - ytdBase) / ytdBase * 100 : null;
+      result = { price: latest, change, pct, ytdPct };
     }
     cacheSet(ck, result);
     return result;
   } catch { return null; }
 }
 
-// ── Alpha Vantage: Monthly (YTD + LTM) ───────────────────────────
-async function fetchMonthly(inst) {
-  if (inst.type === 'crypto') return null; // no monthly series for BTC via this endpoint
-  const ck = 'm_' + inst.id;
-  const hit = cacheGet(ck, 6 * 3600 * 1000);
-  if (hit) return hit;
-  try {
-    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_MONTHLY_ADJUSTED&symbol=${inst.symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
-    const j = await (await fetch(url)).json();
-    if (j.Note || j.Information) return null;
-    const series = j['Monthly Adjusted Time Series'];
-    if (!series) return null;
-    const dates = Object.keys(series).sort().reverse();
-    const latest = parseFloat(series[dates[0]]['5. adjusted close']);
-
-    // YTD: compare to Dec of previous year (last trading day of prev year)
-    const prevYear = new Date().getFullYear() - 1;
-    const ytdDate  = dates.find(d => d.startsWith(`${prevYear}-12`));
-    const ytdBase  = ytdDate ? parseFloat(series[ytdDate]['5. adjusted close']) : null;
-    const ytdPct   = ytdBase ? (latest - ytdBase) / ytdBase * 100 : null;
-
-    // LTM: compare to ~12 months ago
-    const oneYrAgo = new Date(); oneYrAgo.setFullYear(oneYrAgo.getFullYear() - 1);
-    const ltmDate  = dates.find(d => d <= oneYrAgo.toISOString().split('T')[0]);
-    const ltmBase  = ltmDate ? parseFloat(series[ltmDate]['5. adjusted close']) : null;
-    const ltmPct   = ltmBase ? (latest - ltmBase) / ltmBase * 100 : null;
-
-    const result = { ytdPct, ltmPct };
-    cacheSet(ck, result);
-    return result;
-  } catch { return null; }
-}
-
-// ── Alpha Vantage: Overview (EV/EBITDA) ──────────────────────────
-async function fetchOverview(inst) {
-  const ck = 'ov_' + inst.id;
-  const hit = cacheGet(ck, 24 * 3600 * 1000);
-  if (hit) return hit;
-  try {
-    const url = `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${inst.symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
-    const j = await (await fetch(url)).json();
-    if (j.Note || j.Information || !j.EVToEBITDA) return null;
-    const result = { evEbitda: parseFloat(j.EVToEBITDA) || null };
-    cacheSet(ck, result);
-    return result;
-  } catch { return null; }
-}
-
-// ── Load markets (3 phases) ───────────────────────────────────────
+// ── Load markets ──────────────────────────────────────────────────
+// Fire all 20 concurrently. Free tier allows 5/min so the first 5
+// succeed immediately; others may be rate-limited and show "—".
+// Cards update as each result arrives. Cache (30 min) means return
+// visits are instant and consume zero API calls.
 async function loadMarkets() {
-  // Phase 1: quotes — fire concurrently; first 5 succeed, rest may be rate-limited
   await Promise.all(INSTRUMENTS.map(async inst => {
     const q = await fetchQuote(inst);
     S.markets[inst.id].quote = q;
     renderMarkets();
-  }));
-
-  // Phase 2: monthly history (YTD/LTM) — sequential to respect 5/min limit
-  //          skips instantly if cached
-  for (const inst of INSTRUMENTS.filter(i => i.type === 'equity')) {
-    if (!cacheGet('m_' + inst.id, 6 * 3600 * 1000)) await sleep(13000);
-    const m = await fetchMonthly(inst);
-    S.markets[inst.id].monthly = m;
-    renderMarkets();
     renderSummary();
-  }
-
-  // Phase 3: EV/EBITDA overviews — sequential, 24h cache so runs once/day
-  for (const inst of INSTRUMENTS.filter(i => i.hasEV)) {
-    if (!cacheGet('ov_' + inst.id, 24 * 3600 * 1000)) await sleep(13000);
-    const o = await fetchOverview(inst);
-    S.markets[inst.id].overview = o;
-    renderMarkets();
-  }
+  }));
 }
 
 // ── Render: Markets ───────────────────────────────────────────────
@@ -337,22 +286,15 @@ function perfCell(val) {
   if (val === null || val === undefined) return `<span class="dash">—</span>`;
   return `<span class="${changeClass(val)}">${fmtPct(val)}</span>`;
 }
-function evCell(inst) {
-  const ov = S.markets[inst.id].overview;
-  if (!inst.hasEV) return '';
-  if (!ov) return `<span class="dash">—</span>`;
-  return ov.evEbitda ? `<span class="ev-val">${ov.evEbitda.toFixed(1)}x</span>` : `<span class="dash">N/A</span>`;
-}
 
 function marketCardHTML(inst) {
-  const { quote, monthly } = S.markets[inst.id];
+  const { quote } = S.markets[inst.id];
   const price    = quote ? fmtPrice(quote.price) : '—';
   const cls      = quote ? changeClass(quote.pct) : 'flat';
   const dailyStr = quote && quote.pct !== null
     ? `${arrow(quote.pct)}${fmtPct(quote.pct)} today`
     : (quote ? 'Live price' : 'Awaiting data…');
-  const ytd = monthly ? fmtPct(monthly.ytdPct) : null;
-  const ltm = monthly ? fmtPct(monthly.ltmPct) : null;
+  const ytdPct   = quote ? quote.ytdPct : null;
   return `
     <div class="market-card">
       <div class="mc-top"><span class="mc-icon">${inst.icon}</span><span class="mc-tag">${inst.symbol}</span></div>
@@ -362,41 +304,29 @@ function marketCardHTML(inst) {
       <div class="mc-perf">
         <div class="mc-perf-item">
           <span class="perf-label">YTD</span>
-          <span class="perf-val ${ytd ? changeClass(monthly.ytdPct) : 'flat'}">${ytd || '—'}</span>
-        </div>
-        <div class="mc-perf-item">
-          <span class="perf-label">LTM</span>
-          <span class="perf-val ${ltm ? changeClass(monthly.ltmPct) : 'flat'}">${ltm || '—'}</span>
+          <span class="perf-val ${changeClass(ytdPct)}">${fmtPct(ytdPct) || '—'}</span>
         </div>
       </div>
     </div>`;
 }
 
-function stockTableHTML(instruments, showEV) {
+function stockTableHTML(instruments) {
   const rows = instruments.map(inst => {
-    const { quote, monthly } = S.markets[inst.id];
+    const { quote } = S.markets[inst.id];
     const price    = quote ? fmtPrice(quote.price) : `<span class="dash">—</span>`;
     const dailyCls = quote ? changeClass(quote.pct) : 'flat';
     const daily    = quote && quote.pct !== null ? `${arrow(quote.pct)}${fmtPct(quote.pct)}` : `<span class="dash">—</span>`;
-    const ytdVal   = monthly ? monthly.ytdPct : null;
-    const ltmVal   = monthly ? monthly.ltmPct : null;
-    const evCol    = showEV ? `<td>${evCell(inst)}</td>` : '';
     return `<tr>
       <td><span class="stock-name">${inst.name}</span><span class="stock-sym">${inst.symbol}</span></td>
       <td>${price}</td>
       <td class="${dailyCls}">${daily}</td>
-      <td>${perfCell(ytdVal)}</td>
-      <td>${perfCell(ltmVal)}</td>
-      ${evCol}
+      <td>${perfCell(quote ? quote.ytdPct : null)}</td>
     </tr>`;
   }).join('');
-  const evHead = showEV ? '<th>EV/EBITDA</th>' : '';
   return `
     <div class="stock-table-wrap">
       <table class="stock-table">
-        <thead><tr>
-          <th>Company</th><th>Price</th><th>Today</th><th>YTD</th><th>LTM</th>${evHead}
-        </tr></thead>
+        <thead><tr><th>Company</th><th>Price</th><th>Today</th><th>YTD</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -411,15 +341,15 @@ function renderMarkets() {
     <div class="grid-4">${INSTRUMENTS.filter(i=>i.group==='commodity').map(marketCardHTML).join('')}</div>
 
     <span class="section-label mt">Financial Services</span>
-    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='finsvcs'), true)}
+    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='finsvcs'))}
 
     <span class="section-label mt">Carriers</span>
-    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='carriers'), true)}
+    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='carriers'))}
 
     <span class="section-label mt">Tower Companies</span>
-    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='towercos'), true)}
+    ${stockTableHTML(INSTRUMENTS.filter(i=>i.group==='towercos'))}
 
-    <p class="api-note">⚡ YTD, LTM, and EV/EBITDA load progressively. First load may take several minutes on a free Alpha Vantage key (25 req/day). Data is cached locally to speed up return visits.</p>`;
+    <p class="api-note">⚡ 20 API calls per refresh (one per ticker). Free Alpha Vantage key allows 25/day — the first 5 tickers load instantly, the rest populate as rate limits allow. Data is cached for 30 min so return visits are instant.</p>`;
 }
 
 // ── NewsAPI ───────────────────────────────────────────────────────
@@ -490,11 +420,11 @@ function renderPop() {
 // ── Executive Summary ─────────────────────────────────────────────
 function renderSummary() {
   const mktRows = INSTRUMENTS.slice(0,8).map(inst => {
-    const { quote, monthly } = S.markets[inst.id];
-    const price = quote ? fmtPrice(quote.price) : '—';
-    const cls   = quote ? changeClass(quote.pct) : 'flat';
+    const { quote } = S.markets[inst.id];
+    const price  = quote ? fmtPrice(quote.price) : '—';
+    const cls    = quote ? changeClass(quote.pct) : 'flat';
     const pctStr = quote && quote.pct !== null ? `<span class="${cls}" style="font-size:.74rem">${fmtPct(quote.pct)}</span>` : '';
-    const ytdStr = monthly && monthly.ytdPct !== null ? `<span class="${changeClass(monthly.ytdPct)}" style="font-size:.7rem;margin-left:.3rem">${fmtPct(monthly.ytdPct)} YTD</span>` : '';
+    const ytdStr = quote && quote.ytdPct !== null ? `<span class="${changeClass(quote.ytdPct)}" style="font-size:.7rem;margin-left:.3rem">${fmtPct(quote.ytdPct)} YTD</span>` : '';
     return `<div class="exec-row">
       <span class="exec-row-label">${inst.icon} ${inst.name}</span>
       <span class="exec-row-right"><span style="color:var(--text)">${price}</span>${pctStr}${ytdStr}</span>
@@ -537,7 +467,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ── Init ──────────────────────────────────────────────────────────
 async function initDashboard() {
   // Reset state
-  INSTRUMENTS.forEach(i => { S.markets[i.id] = { quote:null, monthly:null, overview:null }; });
+  INSTRUMENTS.forEach(i => { S.markets[i.id] = { quote:null }; });
   S.ma=[]; S.digital={ towers:[],dc:[],fiber:[],spectrum:[] }; S.pop=[];
 
   ['tab-markets','tab-ma','tab-digital','tab-pop'].forEach(id =>
