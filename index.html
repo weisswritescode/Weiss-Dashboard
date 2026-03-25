@@ -112,6 +112,12 @@
     .error-msg { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:1.25rem 1.4rem; color:var(--muted); font-size:.83rem; }
     .api-note { font-size:.72rem; color:var(--muted); margin-top:1rem; padding:.6rem 1rem; background:var(--surface2); border-radius:6px; border-left:3px solid var(--gold); }
 
+    /* Daily pulse banner */
+    .daily-pulse { margin-top:2rem; background:var(--surface); border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:var(--radius); padding:1.75rem 2rem; }
+    .daily-pulse-label { font-size:.65rem; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--accent); margin-bottom:.85rem; }
+    .daily-pulse-text { font-size:1.35rem; font-weight:600; line-height:1.55; color:var(--text); }
+    .daily-pulse-text.loading { color:var(--muted); font-style:italic; font-size:1rem; }
+
     @media (max-width:640px) { main { padding:1rem; } header,nav { padding-left:1rem; padding-right:1rem; } }
   </style>
 </head>
@@ -605,6 +611,54 @@ function renderPop() {
   el.innerHTML = `<span class="section-label">Trending Entertainment &amp; Culture</span><div class="grid-3">${S.pop.map(a=>newsCardHTML(a,null)).join('')}</div>`;
 }
 
+// ── Daily pulse sentence ──────────────────────────────────────────
+function buildDailySentence() {
+  const spy = S.markets['spy']?.quote;
+  const allDigital = [
+    ...S.digital.towers, ...S.digital.dc,
+    ...S.digital.fiber,  ...S.digital.spectrum,
+  ];
+  const clean = s => (s || '').replace(/<[^>]+>/g, '').trim();
+
+  // Market clause
+  let mktClause = '';
+  if (spy && spy.pct !== null) {
+    const mag = Math.abs(spy.pct);
+    const verb = spy.pct >  0.4 ? 'rallied'
+               : spy.pct < -0.4 ? 'sold off'
+               : 'traded roughly flat';
+    mktClause = `Equities ${verb} ${mag >= 0.1 ? mag.toFixed(1) + '%' : ''}`.trim();
+  }
+
+  // M&A clause — use top deal headline
+  let dealClause = '';
+  if (S.ma.length) {
+    let t = clean(S.ma[0].title);
+    if (t.length > 130) t = t.slice(0, 127) + '…';
+    dealClause = t;
+  }
+
+  // Digital / tech clause
+  let techClause = '';
+  if (allDigital.length) {
+    let t = clean(allDigital[0].title);
+    if (t.length > 110) t = t.slice(0, 107) + '…';
+    techClause = t.charAt(0).toLowerCase() + t.slice(1);
+  }
+
+  // Assemble
+  if (mktClause && dealClause && techClause) {
+    return `${mktClause} as ${dealClause.charAt(0).toLowerCase() + dealClause.slice(1)}, while ${techClause}.`;
+  } else if (mktClause && dealClause) {
+    return `${mktClause} as ${dealClause.charAt(0).toLowerCase() + dealClause.slice(1)}.`;
+  } else if (mktClause && techClause) {
+    return `${mktClause} as ${techClause}.`;
+  } else if (dealClause) {
+    return `${dealClause}${techClause ? ', while ' + techClause : ''}.`;
+  }
+  return null; // still loading
+}
+
 // ── Executive Summary ─────────────────────────────────────────────
 function renderSummary() {
   const mktRows = INSTRUMENTS.slice(0,8).map(inst => {
@@ -633,13 +687,21 @@ function renderSummary() {
     ...(S.digital.spectrum.slice(0,1)),
   ];
 
+  const sentence = buildDailySentence();
+  const pulseHTML = `
+    <div class="daily-pulse">
+      <div class="daily-pulse-label">Today at a glance</div>
+      <div class="daily-pulse-text${sentence ? '' : ' loading'}">${sentence || 'Loading today\'s summary…'}</div>
+    </div>`;
+
   document.getElementById('tab-summary').innerHTML = `
     <div class="exec-grid">
       <div class="exec-card"><h3>📈 Market Snapshot</h3>${mktRows || '<div style="color:var(--muted);font-size:.8rem">Loading…</div>'}</div>
       <div class="exec-card"><h3>🤝 Top M&amp;A Headlines</h3>${newsItems(S.ma)}</div>
       <div class="exec-card"><h3>📡 Digital Sector Highlights</h3>${newsItems(topDigital)}</div>
       <div class="exec-card"><h3>🎬 Trending Now</h3>${newsItems(S.pop)}</div>
-    </div>`;
+    </div>
+    ${pulseHTML}`;
 }
 
 // ── Tab switching ─────────────────────────────────────────────────
