@@ -3,7 +3,7 @@ Claude-based listing scorer.
 
 Downloads up to MAX_PHOTOS_PER_LISTING photos, sends them base64-encoded
 alongside the listing text to claude-sonnet-4-6, and returns a structured
-score dict.
+score dict with six rated dimensions plus an overall score.
 """
 
 import re
@@ -20,53 +20,106 @@ from . import config
 
 logger = logging.getLogger(__name__)
 
+# Six dimensions — rated 1-10 independently, then rolled into overall_score
 _SCORE_SCHEMA = """\
 {
   "match": <true or false>,
-  "score": <integer 1-10>,
+  "overall_score": <integer 1-10>,
+  "value_score": <integer 1-10>,
+  "location_score": <integer 1-10>,
+  "room_quality_score": <integer 1-10>,
+  "cleanliness_score": <integer 1-10>,
+  "style_score": <integer 1-10>,
   "lighting_score": <integer 1-10>,
   "privacy_notes": "<brief note about private-space signals>",
-  "reasoning": "<one sentence summary>"
+  "reasoning": "<one sentence overall summary>"
 }"""
 
 _SCORING_PROMPT = """\
-You are evaluating a San Francisco apartment listing for a renter with these priorities \
-(in order): natural light, privacy / having their own complete space, and a desirable \
-neighborhood (Tier 1 = Noe Valley / Pacific Heights; Tier 2 = Castro, Marina, Russian \
-Hill, Nob Hill, Cow Hollow, Glen Park, Presidio Heights, Lower Pacific Heights, Cole \
-Valley, Dolores Heights).
+You are a discerning San Francisco apartment evaluator. Score the listing below \
+across six dimensions, then give a weighted overall score. Base your visual \
+assessments (lighting, cleanliness, style, room quality) strictly on the PHOTOS \
+provided. Where photos are absent, note it and score conservatively.
 
 Listing details
 ---------------
 Title:         {title}
+Source:        {source}
 Price:         ${price}/mo
 Neighborhood:  {neighborhood} {tier_label}
 Bedrooms:      {bedrooms}
+Sq ft:         {sqft}
 Description:
 {description}
 
-Instructions
-------------
-- Assess natural light FROM THE PHOTOS: window size, number of windows, brightness, \
-sun exposure, south/west facing indicators.
-- Note any privacy concerns: live-in landlord, shared entrances not yet flagged, ADU \
-setup, basement unit, etc.
-- Apply a small score bonus for Tier 1 neighborhoods.
+Dimension rubrics
+-----------------
+VALUE (1-10) — price relative to what you're getting:
+  9-10  Exceptional deal for SF — well under market for this neighborhood/size/quality
+  7-8   Fair price; good value
+  5-6   Market rate
+  3-4   Above market; needs compensating factors
+  1-2   Significantly overpriced
 
-Respond with ONLY valid JSON matching this exact schema — no markdown, no prose outside \
-the JSON:
-{schema}
+LOCATION (1-10) — neighborhood desirability:
+  9-10  Tier 1 (Noe Valley / Pacific Heights) + good street / walkability signals
+  7-8   Tier 2 (Castro, Marina, Russian Hill, Nob Hill, Cow Hollow, Glen Park,
+         Presidio Heights, Lower Pacific Heights, Cole Valley, Dolores Heights)
+  5-6   Acceptable but outside preferred tiers
+  3-4   Marginal or uncertain area
+  1-2   Undesirable or excluded (Mission / SoMa / Tenderloin)
 
-Score rubric:
-9-10  Exceptional (great light, Tier 1, no concerns)
-7-8   Strong (good light, solid neighborhood)
-5-6   Average (some concerns)
-3-4   Below average (poor light OR significant privacy issue)
-1-2   Not recommended"""
+ROOM QUALITY (1-10) — layout, size, condition, ceilings, storage (from photos + desc):
+  9-10  Spacious, great layout, high ceilings, excellent condition
+  7-8   Good size and condition with minor issues
+  5-6   Average; functional but nothing special
+  3-4   Small, awkward layout, or noticeably dated
+  1-2   Poor condition, very cramped, or significant structural issues
+
+CLEANLINESS (1-10) — how clean and well-maintained the space looks in photos:
+  9-10  Spotless; clearly well-maintained
+  7-8   Clean with minor signs of wear
+  5-6   Acceptable; average cleanliness
+  3-4   Visibly dirty, stained, or neglected
+  1-2   Filthy or in severe disrepair
+
+STYLE (1-10) — aesthetic appeal and design quality from photos:
+  9-10  Beautiful, cohesive design; modern or tasteful finishes; excellent character
+  7-8   Attractive; nice finishes or interesting architectural details
+  5-6   Neutral/plain; inoffensive but unremarkable
+  3-4   Dated, mismatched, or poorly designed
+  1-2   Very unappealing aesthetics
+
+LIGHTING (1-10) — NATURAL LIGHT judged strictly from photos:
+  9-10  Exceptional — large windows, direct sun, bright and airy
+  7-8   Good natural light; multiple windows
+  5-6   Moderate light; some windows but not standout
+  3-4   Limited light; small or few windows
+  1-2   Very dark; basement-level or no visible natural light
+
+OVERALL SCORE — weighted composite (lighting and location weighted heavier):
+  weight: location 25%, lighting 20%, room_quality 20%, value 15%, cleanliness 10%, style 10%
+  Round to nearest integer.
+
+Respond with ONLY valid JSON matching this exact schema — no markdown, no code fences, \
+no prose outside the JSON:
+{schema}"""
 
 
 class ClaudeScorer:
-    """Scores listings using Claude vision API."""
+    """Scores listings using Claude vision API across six dimensions."""
+
+    # Dimension keys returned in the score dict — order determines display order
+    DIMENSION_KEYS = [
+        "overall_score",
+        "value_score",
+        "location_score",
+        "room_quality_score",
+        "cleanliness_score",
+        "style_score",
+        "lighting_score",
+    ]
+    REQUIRED_KEYS = {"match", "privacy_notes", "reasoning"} | set(DIMENSION_KEYS)
 
     def __init__(self):
         if not config.ANTHROPIC_API_KEY:
@@ -82,12 +135,12 @@ class ClaudeScorer:
         )
 
     def score(self, listing: Listing) -> Optional[dict]:
-        """Return a score dict or None on failure."""
+        """Return a score dict with all six dimension scores, or None on failure."""
         content = self._build_content(listing)
         try:
             response = self._client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=512,
+                max_tokens=600,
                 messages=[{"role": "user", "content": content}],
             )
             raw = response.content[0].text.strip()
@@ -103,7 +156,6 @@ class ClaudeScorer:
     def _build_content(self, listing: Listing) -> list[dict]:
         content: list[dict] = []
 
-        # Attach up to MAX_PHOTOS_PER_LISTING photos
         photo_count = 0
         for url in listing.photo_urls[: config.MAX_PHOTOS_PER_LISTING]:
             img_block = self._fetch_image_block(url)
@@ -117,18 +169,22 @@ class ClaudeScorer:
         tier_label = (
             f"[TIER {listing.neighborhood_tier}]"
             if listing.neighborhood_tier
-            else "[NOT IN TIER — FLAGGED UNCERTAIN]"
+            else "[FLAGGED UNCERTAIN — not in confirmed tier]"
             if listing.neighborhood_uncertain
             else "[EXCLUDED NEIGHBORHOOD]"
         )
 
+        source_label = getattr(listing, "source", "craigslist").title()
+
         prompt = _SCORING_PROMPT.format(
             title=listing.title,
+            source=source_label,
             price=listing.price,
             neighborhood=listing.neighborhood_name or listing.location,
             tier_label=tier_label,
             bedrooms=listing.bedrooms or "unknown",
-            description=(listing.description or "No description")[:3000],
+            sqft=f"{listing.sqft:,}" if listing.sqft else "unknown",
+            description=(listing.description or "No description available")[:3000],
             schema=_SCORE_SCHEMA,
         )
         content.append({"type": "text", "text": prompt})
@@ -155,24 +211,17 @@ class ClaudeScorer:
             return None
 
     def _parse_response(self, raw: str, listing: Listing) -> Optional[dict]:
-        # Strip markdown code fences if model wrapped them anyway
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
-        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE)
-        cleaned = cleaned.strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned, flags=re.MULTILINE).strip()
         try:
             data = json.loads(cleaned)
-            # Validate required keys
-            required = {"match", "score", "lighting_score", "privacy_notes", "reasoning"}
-            missing = required - set(data.keys())
+            missing = self.REQUIRED_KEYS - set(data.keys())
             if missing:
-                logger.warning(
-                    f"Score response missing keys {missing} for {listing.cl_id}"
-                )
+                logger.warning(f"Score response missing keys {missing} for {listing.cl_id}")
                 return None
-            # Coerce types defensively
             data["match"] = bool(data["match"])
-            data["score"] = max(1, min(10, int(data["score"])))
-            data["lighting_score"] = max(1, min(10, int(data["lighting_score"])))
+            for key in self.DIMENSION_KEYS:
+                data[key] = max(1, min(10, int(data[key])))
             return data
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             logger.error(
